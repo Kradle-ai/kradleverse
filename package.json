@@ -1,0 +1,19 @@
+{
+  "name": "kradleverse",
+  "version": "0.1.0",
+  "description": "Local MCP channel that streams KradleVerse game observations into Claude Code sessions via SSE",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "start:node": "npx tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0"
+  },
+  "license": "MIT"
+}
