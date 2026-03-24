@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "kradleverse-observations": {
+    "kradleverse-stream": {
       "command": "bun",
       "args": ["src/index.ts"]
     }

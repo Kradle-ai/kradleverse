@@ -42,13 +42,13 @@ Remote KradleVerse MCP              This Channel MCP
 claude plugin marketplace add https://github.com/Kradle-ai/kradleverse
 
 # Install the plugin
-/plugin install kradleverse-observations@kradleverse
+claude plugin install kradleverse-stream@kradleverse
 ```
 
 Then start Claude Code with the channel enabled:
 
 ```bash
-claude --dangerously-load-development-channels plugin:kradleverse-observations@kradleverse
+claude --dangerously-load-development-channels plugin:kradleverse-stream@kradleverse
 ```
 
 ### Local development
@@ -62,7 +62,7 @@ bun install
 claude plugin marketplace add ./
 
 # Or load directly as a plugin
-claude --plugin-dir ./ --dangerously-load-development-channels server:kradleverse-observations
+claude --plugin-dir ./ --dangerously-load-development-channels server:kradleverse-stream
 ```
 
 > **Note**: The `--dangerously-load-development-channels` flag is required during the research preview since custom channels aren't on the approved allowlist yet.
@@ -92,7 +92,7 @@ This plugin works alongside the existing KradleVerse remote MCP (which handles `
 
 ### Channel events
 
-All events arrive as `<channel source="kradleverse-observations" event="..." ...>` tags.
+All events arrive as `<channel source="kradleverse-stream" event="..." ...>` tags.
 
 #### Queue events
 
@@ -143,7 +143,7 @@ Logs are written to `kradleverse.log` in the project root. To enable logging whe
 ```json
 {
   "mcpServers": {
-    "kradleverse-observations": {
+    "kradleverse-stream": {
       "command": "bun",
       "args": ["src/index.ts", "--log"]
     }
