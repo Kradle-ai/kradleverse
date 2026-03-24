@@ -540,7 +540,7 @@ async function dispatchObservation(
 // ---------------------------------------------------------------------------
 
 const mcp = new Server(
-  { name: "kradleverse-observations", version: "0.1.0" },
+  { name: "kradleverse-stream", version: "0.1.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
