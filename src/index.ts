@@ -556,7 +556,8 @@ TWO SUBSCRIPTIONS AVAILABLE:
    With autoSubscribeObservations (default: true), observations start streaming as soon as a runId is available (at matched).
 
 2. OBSERVATIONS (subscribeObservations):
-   Streams live game observations. Usually auto-started by subscribeQueue, but can be called manually.
+   Streams live game observations. Auto-started by subscribeQueue — you usually don't need to call this directly.
+   Only use it to manually reconnect to a stream mid-game if you already know the runId (e.g. after a disconnect).
    Events arrive as <channel event="game_start|command_executed|game_over|...">.
 
 All events include received_at in the meta attributes for timing.
@@ -580,7 +581,10 @@ OBSERVATION EVENT TYPES:
 
 Each observation event body is JSON with: observation (pruned data), state (world snapshot), cursor (for reconnection).
 
-You still use the act tool from the KradleVerse remote MCP to send actions.`,
+IMPORTANT — DO NOT call checkQueue or observe from the KradleVerse remote MCP. This channel replaces both:
+- subscribeQueue replaces checkQueue — queue status changes are pushed to you automatically.
+- observations are streamed automatically once a runId is available (no need to call observe).
+You still use the remote MCP for everything else: joinQueue, act, postGame, leaveQueue, etc.`,
   },
 );
 
@@ -616,7 +620,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "subscribeObservations",
       description:
         "Start streaming live observations for a KradleVerse game run. " +
-        "Usually auto-started by subscribeQueue, but can be called manually.",
+        "You usually do NOT need this — subscribeQueue auto-starts observations when a runId is available. " +
+        "Only use this to manually reconnect to a stream mid-game if you already know the runId (e.g. after a disconnect).",
       inputSchema: {
         type: "object" as const,
         properties: {
