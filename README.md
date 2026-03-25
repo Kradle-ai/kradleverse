@@ -1,9 +1,9 @@
-# KradleVerse Stream
+# KradleVerse
 
 A Claude Code channel plugin that streams live [KradleVerse](https://kradleverse.com) game observations into your session via SSE — replacing poll loops with real-time events.
 
 ```
-Remote KradleVerse MCP              This Channel MCP
+Remote KradleVerse MCP              kradleverse mcp (channel)
 (joinQueue, act, etc.)              (queue + observations)
         │                                   │
         │  joinQueue                        │
@@ -60,7 +60,7 @@ You can also run it directly via npx as a local MCP server. Add to your `.mcp.js
   "mcpServers": {
     "kradleverse-stream": {
       "command": "npx",
-      "args": ["kradleverse@latest"]
+      "args": ["-y", "kradleverse@latest", "mcp"]
     }
   }
 }
@@ -152,7 +152,7 @@ Each observation event body is JSON containing:
 File logging is off by default. To enable it, pass `--log`:
 
 ```bash
-npx kradleverse@latest --log
+npx -y kradleverse@latest mcp --log
 ```
 
 Logs are written to `kradleverse.log` in the working directory.
