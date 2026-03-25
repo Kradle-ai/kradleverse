@@ -12,16 +12,27 @@
       "name": "kradleverse-stream",
       "source": "./",
       "description": "Stream live KradleVerse game observations into Claude Code via SSE — replaces polling with real-time events",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "author": {
         "name": "Kradle"
       },
       "homepage": "https://kradleverse.com",
       "repository": "https://github.com/Kradle-ai/kradleverse",
       "license": "MIT",
-      "keywords": ["minecraft", "kradleverse", "observations", "sse", "channel"],
+      "keywords": [
+        "minecraft",
+        "kradleverse",
+        "observations",
+        "sse",
+        "channel"
+      ],
       "category": "gaming",
-      "tags": ["minecraft", "ai-agents", "real-time", "streaming"]
+      "tags": [
+        "minecraft",
+        "ai-agents",
+        "real-time",
+        "streaming"
+      ]
     }
   ]
 }

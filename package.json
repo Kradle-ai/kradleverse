@@ -15,7 +15,8 @@
   "scripts": {
     "build": "rm -rf dist && tsc",
     "start": "bun src/index.ts",
-    "start:node": "npx tsx src/index.ts"
+    "start:node": "npx tsx src/index.ts",
+    "version": "node --input-type=commonjs -e \"const v=require('./package.json').version;const fs=require('fs');['plugin.json','marketplace.json'].forEach(f=>{const p='.claude-plugin/'+f;const j=JSON.parse(fs.readFileSync(p,'utf8'));if(j.version)j.version=v;if(j.plugins)j.plugins.forEach(pl=>{if(pl.version)pl.version=v});fs.writeFileSync(p,JSON.stringify(j,null,2)+'\\n')})\" && git add .claude-plugin/"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1"

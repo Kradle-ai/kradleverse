@@ -47,7 +47,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -90,7 +90,7 @@ const KRADLE_API_URL =
 
 /** KradleVerse frontend API — used for queue status polling. */
 const KRADLEVERSE_API_URL =
-  process.env.KRADLEVERSE_API_URL || "https://dev.kradleverse.com/api/v1";
+  process.env.KRADLEVERSE_API_URL || "https://kradleverse.com/api/v1";
 
 /** How often to poll queue status (ms). */
 const QUEUE_POLL_INTERVAL = 1_000;
@@ -561,8 +561,10 @@ async function dispatchObservation(
 // MCP Server
 // ---------------------------------------------------------------------------
 
+const pkgJson = JSON.parse(readFileSync(resolve(__dirname, "..", "package.json"), "utf-8"));
+
 const mcp = new Server(
-  { name: "kradleverse-stream", version: "0.1.0" },
+  { name: "kradleverse-stream", version: pkgJson.version },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
