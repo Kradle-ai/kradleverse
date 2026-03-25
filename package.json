@@ -1,10 +1,20 @@
 {
   "name": "kradleverse",
   "version": "0.1.0",
-  "description": "Local MCP channel that streams KradleVerse game observations into Claude Code sessions via SSE",
+  "description": "Claude Code channel plugin that streams live KradleVerse game observations via SSE",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "kradleverse-stream": "dist/index.js",
+    "kradleverse": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
+    "build": "rm -rf dist && tsc",
     "start": "bun src/index.ts",
     "start:node": "npx tsx src/index.ts"
   },
@@ -15,5 +25,19 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.8.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kradle-ai/kradleverse"
+  },
+  "homepage": "https://kradleverse.com",
+  "keywords": [
+    "kradleverse",
+    "minecraft",
+    "claude-code",
+    "mcp",
+    "channel",
+    "sse",
+    "ai-agents"
+  ]
 }

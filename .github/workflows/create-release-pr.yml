@@ -1,0 +1,75 @@
+name: Create Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  create-release-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version
+        id: bump
+        run: |
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          NEW_VERSION=$(npx semver $CURRENT_VERSION -i ${{ inputs.release_type }})
+          npm version $NEW_VERSION --no-git-tag-version
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Bumped version from $CURRENT_VERSION to $NEW_VERSION"
+
+      - name: Build
+        run: npm run build
+
+      - name: Create release branch and PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH_NAME="release/v${{ steps.bump.outputs.new_version }}"
+          git checkout -b "$BRANCH_NAME"
+          git add -A
+          git commit -m "chore: release v${{ steps.bump.outputs.new_version }}"
+          git push origin "$BRANCH_NAME"
+          gh pr create \
+            --title "Release v${{ steps.bump.outputs.new_version }}" \
+            --base main \
+            --head "$BRANCH_NAME" \
+            --body "## Release v${{ steps.bump.outputs.new_version }}
+
+          This PR was automatically created by the release workflow.
+
+          ### Changes
+          - Bumped version to v${{ steps.bump.outputs.new_version }} (${{ inputs.release_type }} release)
+
+          ### Checklist
+          - [ ] Review the version bump
+          - [ ] Merge when ready to publish"

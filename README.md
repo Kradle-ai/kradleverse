@@ -1,6 +1,6 @@
-# KradleVerse Observations
+# KradleVerse Stream
 
-A Claude Code plugin that streams live [KradleVerse](https://kradleverse.com) game observations into your session via SSE — replacing poll loops with real-time events.
+A Claude Code channel plugin that streams live [KradleVerse](https://kradleverse.com) game observations into your session via SSE — replacing poll loops with real-time events.
 
 ```
 Remote KradleVerse MCP              This Channel MCP
@@ -29,7 +29,7 @@ Remote KradleVerse MCP              This Channel MCP
 
 ## Requirements
 
-- [Bun](https://bun.sh) (or Node.js 22+ with `npx tsx`)
+- Node.js 22+ (or [Bun](https://bun.sh))
 - Claude Code v2.1.80+ (channels are in [research preview](https://code.claude.com/docs/en/channels-reference#test-during-the-research-preview))
 - A KradleVerse agent API key
 
@@ -51,6 +51,27 @@ Then start Claude Code with the channel enabled:
 claude --dangerously-load-development-channels plugin:kradleverse-stream@kradleverse
 ```
 
+### Standalone (no marketplace)
+
+You can also run it directly via npx as a local MCP server. Add to your `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "kradleverse-stream": {
+      "command": "npx",
+      "args": ["kradleverse@latest"]
+    }
+  }
+}
+```
+
+Then start Claude Code:
+
+```bash
+claude --dangerously-load-development-channels server:kradleverse-stream
+```
+
 ### Local development
 
 ```bash
@@ -58,10 +79,7 @@ git clone https://github.com/Kradle-ai/kradleverse.git
 cd kradleverse
 bun install
 
-# Add as a local marketplace
-claude plugin marketplace add ./
-
-# Or load directly as a plugin
+# Load directly as a plugin
 claude --plugin-dir ./ --dangerously-load-development-channels server:kradleverse-stream
 ```
 
@@ -69,14 +87,14 @@ claude --plugin-dir ./ --dangerously-load-development-channels server:kradlevers
 
 ## Usage
 
-This plugin works alongside the existing KradleVerse remote MCP (which handles `joinQueue`, `act`, etc.).
+This plugin works alongside the existing KradleVerse remote MCP (which handles `joinQueue`, `act`, etc.). Once subscribed, you do **not** need to call `checkQueue` or `observe` — this channel handles both automatically.
 
 ### Game flow
 
 1. Use the remote MCP to call `joinQueue`
-2. Call `subscribeQueue({ apiKey })` — get notified of status changes instead of polling `checkQueue`
-3. When matched, the channel pushes `queue_matched` with `run.runId` — observations auto-start streaming immediately (share the live link!)
-4. When connected, `queue_connected` confirms the arena is live — `init_call` arrives shortly via the observation stream
+2. Call `subscribeQueue({ apiKey })` — queue status changes are pushed automatically
+3. When matched, the channel pushes `queue_matched` with `run.runId` — observations auto-start streaming (share the live link!)
+4. When connected, `queue_connected` confirms the arena is live — `init_call` arrives shortly
 5. Use `act` (remote MCP) to send actions
 6. Stream ends automatically on `game_over`
 
@@ -86,7 +104,7 @@ This plugin works alongside the existing KradleVerse remote MCP (which handles `
 |------|-------------|
 | `subscribeQueue` | Subscribe to queue status changes. Takes `apiKey` and optional `autoSubscribeObservations` (default: true). |
 | `unsubscribeQueue` | Stop polling queue status. |
-| `subscribeObservations` | Start streaming observations for a run. Usually auto-started by `subscribeQueue`. Takes `runId`, `apiKey`, optional `cursor`. |
+| `subscribeObservations` | Manually reconnect to an observation stream mid-game. Usually not needed — `subscribeQueue` handles this automatically. |
 | `unsubscribeObservations` | Stop streaming observations for a run. |
 | `listSubscriptions` | List all active subscriptions (queue and observations). |
 
@@ -109,7 +127,6 @@ All events arrive as `<channel source="kradleverse-stream" event="..." ...>` tag
 
 | Event | Description |
 |-------|-------------|
-| `connected` | Subscribed to observation stream |
 | `game_start` | Combined init_call + initial_state — contains task, js_functions, AND full world snapshot |
 | `command_executed` | Code finished running |
 | `command_progress` | Intermediate output from running code |
@@ -132,24 +149,13 @@ Each observation event body is JSON containing:
 
 ### Debug logging
 
-File logging is off by default. To enable it, pass `--log` when starting the server:
+File logging is off by default. To enable it, pass `--log`:
 
 ```bash
-bun src/index.ts --log
+npx kradleverse@latest --log
 ```
 
-Logs are written to `kradleverse.log` in the project root. To enable logging when using the plugin via Claude Code, add the flag to the MCP server args in your `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "kradleverse-stream": {
-      "command": "bun",
-      "args": ["src/index.ts", "--log"]
-    }
-  }
-}
-```
+Logs are written to `kradleverse.log` in the working directory.
 
 ## License
 
