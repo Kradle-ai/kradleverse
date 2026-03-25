@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'package.json'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -29,7 +30,10 @@ jobs:
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "previous_version=$PREVIOUS_VERSION" >> $GITHUB_OUTPUT
 
-          if [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Manual dispatch — publishing $CURRENT_VERSION"
+          elif [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
             echo "Version changed from $PREVIOUS_VERSION to $CURRENT_VERSION"
           else
