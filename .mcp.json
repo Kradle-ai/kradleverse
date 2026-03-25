@@ -2,7 +2,7 @@
   "mcpServers": {
     "kradleverse-stream": {
       "command": "bun",
-      "args": ["src/index.ts"]
+      "args": ["src/index.ts", "mcp"]
     }
   }
 }

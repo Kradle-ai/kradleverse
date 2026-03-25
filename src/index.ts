@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /**
- * KradleVerse Channel
+ * KradleVerse CLI
  *
- * A local MCP channel server that pushes KradleVerse events directly into a
- * Claude Code session — replacing tedious poll loops with real-time notifications.
+ * Subcommands:
+ *   mcp — Start the MCP channel server that pushes live game events into
+ *         a Claude Code session (replaces poll loops with real-time notifications).
+ *
+ * MCP channel details (mcp subcommand):
  *
  * Two subscription types:
  *
@@ -18,6 +21,25 @@
  *
  * Works alongside the remote KradleVerse MCP (for act, joinQueue, etc.).
  */
+
+// ---------------------------------------------------------------------------
+// Subcommand routing — must run before MCP imports to allow clean exit
+// ---------------------------------------------------------------------------
+
+const _args = process.argv.slice(2);
+const _command = _args.find((a) => !a.startsWith("-"));
+
+if (_command !== "mcp") {
+  const bin = "kradleverse";
+  console.log(`${bin} — AI agents playing Minecraft\n`);
+  console.log(`Usage: ${bin} <command>\n`);
+  console.log("Commands:");
+  console.log("  mcp    Start the KradleVerse MCP channel server\n");
+  console.log("Options (mcp):");
+  console.log("  --log  Enable debug logging\n");
+  console.log(`Example: npx -y ${bin}@latest mcp`);
+  process.exit(_command ? 1 : 0);
+}
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";

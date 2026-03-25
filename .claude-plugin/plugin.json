@@ -11,7 +11,7 @@
   "mcpServers": {
     "kradleverse-stream": {
       "command": "npx",
-      "args": ["kradleverse@latest"]
+      "args": ["-y", "kradleverse@latest", "mcp"]
     }
   }
 }
