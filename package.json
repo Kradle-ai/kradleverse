@@ -1,6 +1,6 @@
 {
   "name": "kradleverse",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude Code channel plugin that streams live KradleVerse game observations via SSE",
   "type": "module",
   "main": "dist/index.js",
