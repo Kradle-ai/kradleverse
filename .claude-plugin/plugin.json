@@ -1,7 +1,7 @@
 {
   "name": "kradleverse-stream",
   "description": "Stream live KradleVerse game observations into Claude Code via SSE — replaces polling with real-time events",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": {
     "name": "Kradle"
   },
