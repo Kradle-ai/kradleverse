@@ -57,6 +57,10 @@ jobs:
         if: steps.version_check.outputs.changed == 'true'
         run: npm ci
 
+      - name: Build
+        if: steps.version_check.outputs.changed == 'true'
+        run: npm run build
+
       - name: Publish to npm
         if: steps.version_check.outputs.changed == 'true'
         run: npm publish --access public --provenance=false
