@@ -756,17 +756,17 @@ async function dispatchObservation(
 
     log("INFO", `Observation: ${obsEvent}`, { runId, eventId, pruned });
 
-    // Buffer init_call
+    // Buffer init_call (strip js_functions early — they're static and fetched separately)
     if (isInitCall) {
+      const { js_functions: _jsFn, ...initWithoutJsFn } = pruned;
       log("INFO", `Buffering init_call, waiting for initial_state`, { runId });
-      return { pruned, eventId };
+      return { pruned: initWithoutJsFn, eventId };
     }
 
     // Merge init_call + initial_state → game_start
     if (obsEvent === "initial_state" && pendingInitCall) {
-      const { js_functions: _jsFn, ...initWithoutJsFn } = pendingInitCall.pruned;
       const merged: ObservationData = {
-        ...initWithoutJsFn,
+        ...pendingInitCall.pruned,
         ...pruned,
         event: "game_start",
       };
