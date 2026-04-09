@@ -158,6 +158,12 @@ const STRIP_KEYS = new Set([
   "name", "depthActionCounter", "participantId", "runId", "time",
 ]);
 
+/**
+ * Events where we only keep `event` plus meaningful content fields.
+ * Strips observationId, pastObservationId, elapsedMs, and empty values.
+ */
+const LIGHTWEIGHT_EVENTS = new Set(["chat", "message"]);
+
 const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F]/g;
 
 /**
@@ -253,6 +259,39 @@ function compactEntities(
   return grouped;
 }
 
+/** Truncate position coordinates to 2 decimal places. */
+function compactPosition(pos: unknown): unknown {
+  if (!pos || typeof pos !== "object") return pos;
+  const p = pos as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(p)) {
+    out[k] = typeof v === "number" ? Math.round(v * 100) / 100 : v;
+  }
+  return out;
+}
+
+/** Strip null armor slots; return null if all slots are null/missing. */
+function compactArmor(armor: unknown): unknown {
+  if (!armor || typeof armor !== "object") return armor;
+  const a = armor as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  let hasValue = false;
+  for (const [k, v] of Object.entries(a)) {
+    if (v != null) {
+      out[k] = v;
+      hasValue = true;
+    }
+  }
+  return hasValue ? out : null;
+}
+
+function compactValue(key: string, value: unknown): unknown {
+  if (key === "entities") return compactEntities(sanitize(value));
+  if (key === "position") return compactPosition(sanitize(value));
+  if (key === "armor") return compactArmor(sanitize(value));
+  return sanitize(value);
+}
+
 function pruneObservation(
   data: ObservationData,
   runningState: Record<string, unknown>,
@@ -262,10 +301,7 @@ function pruneObservation(
 
   for (const key of STATE_KEYS) {
     if (key in data) {
-      runningState[key] =
-        key === "entities"
-          ? compactEntities(sanitize(data[key]))
-          : sanitize(data[key]);
+      runningState[key] = compactValue(key, data[key]);
     }
   }
 
@@ -273,11 +309,35 @@ function pruneObservation(
   for (const [key, value] of Object.entries(data)) {
     if (STRIP_KEYS.has(key)) continue;
     if (!keepState && STATE_KEYS.has(key)) continue;
-    pruned[key] =
-      key === "entities"
-        ? compactEntities(sanitize(value))
-        : sanitize(value);
+    let sanitized = compactValue(key, value);
+    // Skip null values and empty arrays at the root level
+    if (sanitized === null || sanitized === undefined) continue;
+    if (Array.isArray(sanitized) && sanitized.length === 0) continue;
+    // Trim chat message strings
+    if (key === "chatMessages" && Array.isArray(sanitized)) {
+      sanitized = (sanitized as Array<Record<string, unknown>>).map((m) => ({
+        ...m,
+        ...(typeof m.message === "string" ? { message: m.message.trim() } : {}),
+      }));
+    }
+    pruned[key] = sanitized;
   }
+
+  // For lightweight events, keep only event + meaningful content
+  if (LIGHTWEIGHT_EVENTS.has(pruned.event as string)) {
+    const slim: ObservationData = { event: pruned.event };
+    if (Array.isArray(pruned.chatMessages) && pruned.chatMessages.length > 0) {
+      slim.chatMessages = (pruned.chatMessages as Array<Record<string, unknown>>).map((m) => ({
+        sender: m.sender,
+        message: typeof m.message === "string" ? m.message.trim() : m.message,
+      }));
+    }
+    if (typeof pruned.output === "string" && pruned.output.length > 0) {
+      slim.output = pruned.output.trim();
+    }
+    return slim;
+  }
+
   return pruned;
 }
 
@@ -698,17 +758,19 @@ async function dispatchObservation(
       pendingInitCall = null;
     }
 
-    // Normal dispatch — game_over gets full state, others get delta only
+    // Normal dispatch — game_over gets full state, lightweight events skip state entirely,
+    // others get delta only
     const content: Record<string, unknown> = {
       observation: pruned,
     };
     if (obsEvent === "game_over") {
       content.state = { ...runningState };
-    } else {
+      Object.assign(previousSentState, runningState);
+    } else if (!LIGHTWEIGHT_EVENTS.has(obsEvent)) {
       const stateDiff = diffState(runningState, previousSentState);
       if (stateDiff) content.state = stateDiff;
+      Object.assign(previousSentState, runningState);
     }
-    Object.assign(previousSentState, runningState);
     if (eventId) content.cursor = eventId;
     await notify(content, { run_id: runId, event: obsEvent });
 
