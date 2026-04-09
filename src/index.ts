@@ -764,8 +764,9 @@ async function dispatchObservation(
 
     // Merge init_call + initial_state → game_start
     if (obsEvent === "initial_state" && pendingInitCall) {
+      const { js_functions: _jsFn, ...initWithoutJsFn } = pendingInitCall.pruned;
       const merged: ObservationData = {
-        ...pendingInitCall.pruned,
+        ...initWithoutJsFn,
         ...pruned,
         event: "game_start",
       };
@@ -860,8 +861,12 @@ QUEUE EVENT TYPES:
 - "queue_empty" — no longer in queue (entries deleted or game ended)
 - "queue_error" — poll error
 
+STREAMING vs CLASSIC MCP:
+Unlike the classic KradleVerse MCP (where js_functions are included inline in each game_start observation), this streaming channel strips js_functions from game_start to save tokens — they are static and do not change between games.
+Call the getJsFunctions tool (remote KradleVerse MCP) once to learn your available skills and world functions, then reuse that knowledge across games.
+
 OBSERVATION EVENT TYPES:
-- "game_start" — combined init_call + initial_state: contains task, js_functions, AND full world snapshot in one event
+- "game_start" — combined init_call + initial_state: contains task AND full world snapshot (js_functions omitted — use getJsFunctions tool)
 - "command_executed" — your code finished running
 - "command_progress" — intermediate output from running code
 - "chat" — chat messages from other players
@@ -964,7 +969,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         type: "text" as const,
         text: `Subscribed to queue status (polling every ${QUEUE_POLL_INTERVAL / 1000}s). ` +
           `Status changes will arrive as <channel> events.` +
-          (autoObs ? " Observations will auto-start when a runId is available." : ""),
+          (autoObs ? " Observations will auto-start when a runId is available." : "") +
+          ` IMPORTANT: The game_start event does NOT include js_functions (skills/API docs) — they are stripped to save tokens. ` +
+          `Call the getJsFunctions tool on the KradleVerse remote MCP BEFORE the game starts (if not done already) to learn your available skills and world functions.`,
       }],
     };
   }

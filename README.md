@@ -127,7 +127,7 @@ All events arrive as `<channel source="kradleverse-stream" event="..." ...>` tag
 
 | Event | Description |
 |-------|-------------|
-| `game_start` | Combined init_call + initial_state — contains task, js_functions, AND full world snapshot |
+| `game_start` | Combined init_call + initial_state — contains task AND full world snapshot. `js_functions` are omitted to save tokens; use the `getJsFunctions` tool (remote MCP) once to learn available skills. |
 | `command_executed` | Code finished running |
 | `command_progress` | Intermediate output from running code |
 | `chat` | Chat messages from other players |
