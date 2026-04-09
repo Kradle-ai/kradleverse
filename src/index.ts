@@ -96,6 +96,11 @@ const KRADLEVERSE_API_URL =
 /** How often to poll queue status (ms). */
 const QUEUE_POLL_INTERVAL = 1_000;
 
+/** SSE reconnect settings. */
+const SSE_MAX_RETRIES = 5;
+const SSE_INITIAL_BACKOFF_MS = 1_000;
+const SSE_MAX_BACKOFF_MS = 30_000;
+
 log("INFO", "Config", { KRADLE_API_URL, KRADLEVERSE_API_URL, QUEUE_POLL_INTERVAL });
 
 // ---------------------------------------------------------------------------
@@ -566,107 +571,139 @@ async function startStreaming(
   if (existing) existing.abort.abort();
   subscriptions.set(runId, { runId, abort });
 
-  const url = new URL(`${KRADLE_API_URL}/runs/${runId}/observations/stream`);
-  if (cursor) url.searchParams.set("cursor", cursor);
-
+  // State persists across reconnects
   const runningState: Record<string, unknown> = {};
   const previousSentState: Record<string, unknown> = {};
-  /** Tracks output length already sent per participant for delta compression. */
   const outputDeltaStates = new Map<string, number>();
-  let lastEventId: string | undefined;
+  let lastEventId: string | undefined = cursor;
   let pendingInitCall: { pruned: ObservationData; eventId: string } | null = null;
+  let retries = 0;
 
-  log("INFO", `Observation stream connecting`, { runId, url: url.toString() });
+  type ConnectResult = "done" | "aborted" | "error";
 
-  try {
-    const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "text/event-stream",
-        "Cache-Control": "no-cache",
-      },
-      signal: abort.signal,
-    });
+  async function connectOnce(): Promise<ConnectResult> {
+    const url = new URL(`${KRADLE_API_URL}/runs/${runId}/observations/stream`);
+    if (lastEventId) url.searchParams.set("cursor", lastEventId);
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      log("ERROR", `Observation stream HTTP error`, { runId, status: response.status, body });
-      await notify(
-        { error: `Failed to connect to observation stream: ${response.status} ${body}` },
-        { run_id: runId, event: "error" },
-      );
-      subscriptions.delete(runId);
-      return;
-    }
+    log("INFO", `Observation stream connecting`, { runId, url: url.toString() });
 
-    if (!response.body) {
-      log("ERROR", `No response body from SSE stream`, { runId });
-      await notify(
-        { error: "No response body from SSE stream" },
-        { run_id: runId, event: "error" },
-      );
-      subscriptions.delete(runId);
-      return;
-    }
+    try {
+      const response = await fetch(url.toString(), {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "text/event-stream",
+          "Cache-Control": "no-cache",
+        },
+        signal: abort.signal,
+      });
 
-    log("INFO", `Observation stream connected`, { runId });
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        log("ERROR", `Observation stream HTTP error`, { runId, status: response.status, body });
+        if (response.status >= 400 && response.status < 500) {
+          await notify(
+            { error: `Failed to connect to observation stream: ${response.status} ${body}` },
+            { run_id: runId, event: "error" },
+          );
+          return "done"; // 4xx — non-retryable
+        }
+        return "error"; // 5xx — retryable
+      }
 
-    // Parse SSE stream
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let currentEventType = "";
-    let currentData = "";
-    let currentId = "";
+      if (!response.body) {
+        log("ERROR", `No response body from SSE stream`, { runId });
+        return "error";
+      }
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      log("INFO", `Observation stream connected`, { runId });
 
-      buffer += decoder.decode(value, { stream: true });
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let currentEventType = "";
+      let currentData = "";
+      let currentId = "";
 
       while (true) {
-        const newlineIndex = buffer.indexOf("\n");
-        if (newlineIndex === -1) break;
+        const { done, value } = await reader.read();
+        if (done) break;
 
-        const line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
+        buffer += decoder.decode(value, { stream: true });
 
-        if (line === "") {
-          if (currentData) {
-            pendingInitCall = await dispatchObservation(
-              runId, currentEventType, currentData, currentId,
-              runningState, previousSentState, outputDeltaStates, pendingInitCall,
-            );
-            lastEventId = currentId || lastEventId;
+        while (true) {
+          const newlineIndex = buffer.indexOf("\n");
+          if (newlineIndex === -1) break;
 
-            if (currentEventType === "done") {
-              log("INFO", `Observation stream done event`, { runId });
-              subscriptions.delete(runId);
-              return;
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+
+          if (line === "") {
+            if (currentData) {
+              pendingInitCall = await dispatchObservation(
+                runId, currentEventType, currentData, currentId,
+                runningState, previousSentState, outputDeltaStates, pendingInitCall,
+              );
+              lastEventId = currentId || lastEventId;
+              retries = 0; // successful data — reset backoff
+
+              if (currentEventType === "done") {
+                log("INFO", `Observation stream done event`, { runId });
+                return "done";
+              }
             }
+            currentEventType = "";
+            currentData = "";
+            currentId = "";
+          } else if (line.startsWith("data: ")) {
+            currentData += (currentData ? "\n" : "") + line.slice(6);
+          } else if (line.startsWith("event: ")) {
+            currentEventType = line.slice(7);
+          } else if (line.startsWith("id: ")) {
+            currentId = line.slice(4);
           }
-          currentEventType = "";
-          currentData = "";
-          currentId = "";
-        } else if (line.startsWith("data: ")) {
-          currentData += (currentData ? "\n" : "") + line.slice(6);
-        } else if (line.startsWith("event: ")) {
-          currentEventType = line.slice(7);
-        } else if (line.startsWith("id: ")) {
-          currentId = line.slice(4);
         }
       }
-    }
-  } catch (err: unknown) {
-    if (err instanceof Error && err.name === "AbortError") {
-      log("INFO", `Observation stream aborted`, { runId });
-    } else {
+
+      // reader.read() returned done without a "done" event — unexpected EOF
+      log("WARN", `Observation stream ended unexpectedly (EOF)`, { runId });
+      return "error";
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") {
+        log("INFO", `Observation stream aborted`, { runId });
+        return "aborted";
+      }
       log("ERROR", `Observation stream error`, { runId, error: err instanceof Error ? err.message : String(err) });
-      await notify(
-        { error: `Stream error: ${err instanceof Error ? err.message : String(err)}`, lastEventId },
-        { run_id: runId, event: "error" },
-      );
+      return "error";
+    }
+  }
+
+  // Retry loop
+  try {
+    while (true) {
+      const result = await connectOnce();
+      if (result !== "error") return;
+
+      retries++;
+      if (retries > SSE_MAX_RETRIES) {
+        log("ERROR", `Observation stream max retries (${SSE_MAX_RETRIES}) exhausted`, { runId });
+        await notify(
+          { error: `Stream disconnected after ${SSE_MAX_RETRIES} retries`, lastEventId },
+          { run_id: runId, event: "error" },
+        );
+        return;
+      }
+
+      if (abort.signal.aborted) return;
+
+      const backoff = Math.min(SSE_INITIAL_BACKOFF_MS * 2 ** (retries - 1), SSE_MAX_BACKOFF_MS);
+      log("INFO", `Observation stream reconnecting in ${backoff}ms (attempt ${retries}/${SSE_MAX_RETRIES})`, { runId, lastEventId });
+
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, backoff);
+        abort.signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+      });
+
+      if (abort.signal.aborted) return;
     }
   } finally {
     subscriptions.delete(runId);
