@@ -64,6 +64,7 @@ if (LOG_ENABLED) {
   writeFileSync(LOG_FILE, `[${new Date().toISOString()}] KradleVerse channel started\n`);
 }
 
+
 function log(level: "INFO" | "WARN" | "ERROR", msg: string, data?: unknown): void {
   if (!LOG_ENABLED) return;
   const ts = new Date().toISOString();
@@ -71,7 +72,7 @@ function log(level: "INFO" | "WARN" | "ERROR", msg: string, data?: unknown): voi
   if (data !== undefined) {
     try {
       const s = JSON.stringify(data);
-      line += ` ${s.length > 2000 ? s.slice(0, 2000) + "...(truncated)" : s}`;
+      line += ` ${s}`;
     } catch {
       line += ` [unserializable]`;
     }
@@ -101,6 +102,24 @@ log("INFO", "Config", { KRADLE_API_URL, KRADLEVERSE_API_URL, QUEUE_POLL_INTERVAL
 // Channel notification helper
 // ---------------------------------------------------------------------------
 
+/** Serialize a value as compact JS notation (single quotes, unquoted keys). */
+function toJS(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "string") {
+    const escaped = value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+    return `'${escaped}'`;
+  }
+  if (Array.isArray(value)) return `[${value.map(toJS).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .map(([k, v]) => `${k}:${toJS(v)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return String(value);
+}
+
 /** Late-bound — set after Server is created. */
 let mcpServer: Server;
 
@@ -109,15 +128,16 @@ let mcpServer: Server;
  * and logs the event to the debug log file.
  */
 async function notify(
-  content: string,
+  content: Record<string, unknown> | string,
   meta: Record<string, string>,
 ): Promise<void> {
   const receivedAt = new Date().toISOString();
   const enrichedMeta = { ...meta, received_at: receivedAt };
-  log("INFO", `→ channel event=${meta.event ?? "?"}`, { meta: enrichedMeta, contentLength: content.length });
+  const serialized = typeof content === "string" ? content : toJS(content);
+  log("INFO", `→ channel event=${meta.event ?? "?"}`, { meta: enrichedMeta, content: serialized });
   await mcpServer.notification({
     method: "notifications/claude/channel",
-    params: { content, meta: enrichedMeta },
+    params: { content: serialized, meta: enrichedMeta },
   });
 }
 
@@ -182,6 +202,51 @@ function diffState(
   return hasChanges ? changed : null;
 }
 
+/**
+ * Compact entities from an array of objects into a grouped map of position
+ * strings. Keeps all spatial info but truncates to integers.
+ *
+ * Before: [{type:'item',absolute:{x:1.5,y:-60,z:4.5},relative:'~-1 ~0 ~0',distance:1.19,additional:{itemType:'wheat'}}]
+ * After:  {"item:wheat":["2 -60 5 (~-1 ~0 ~0) dist=1"]}
+ */
+function compactEntities(
+  entities: unknown,
+): Record<string, string[]> | unknown {
+  if (!Array.isArray(entities)) return entities;
+  const grouped: Record<string, string[]> = {};
+  for (const e of entities) {
+    if (!e || typeof e !== "object") continue;
+    const { type, absolute: abs, relative: rel, distance: d, additional } =
+      e as Record<string, unknown>;
+    if (typeof type !== "string") continue;
+
+    // Merge item:type back (e.g. type="item" + additional.itemType="wheat" → "item:wheat")
+    let key = type;
+    if (
+      type === "item" &&
+      additional &&
+      typeof additional === "object" &&
+      "itemType" in (additional as Record<string, unknown>)
+    ) {
+      key = `item:${(additional as Record<string, unknown>).itemType}`;
+    }
+
+    const a = abs as { x: number; y: number; z: number } | undefined;
+    const ax = a ? Math.round(a.x) : 0;
+    const ay = a ? Math.round(a.y) : 0;
+    const az = a ? Math.round(a.z) : 0;
+    const dist = typeof d === "number" ? Math.round(d) : 0;
+
+    const str = `${ax} ${ay} ${az} (${rel || "~0 ~0 ~0"}) dist=${dist}`;
+    if (grouped[key]) {
+      grouped[key].push(str);
+    } else {
+      grouped[key] = [str];
+    }
+  }
+  return grouped;
+}
+
 function pruneObservation(
   data: ObservationData,
   runningState: Record<string, unknown>,
@@ -190,14 +255,22 @@ function pruneObservation(
   const keepState = isInitCall || KEEP_STATE_EVENTS.has(data.event as string);
 
   for (const key of STATE_KEYS) {
-    if (key in data) runningState[key] = sanitize(data[key]);
+    if (key in data) {
+      runningState[key] =
+        key === "entities"
+          ? compactEntities(sanitize(data[key]))
+          : sanitize(data[key]);
+    }
   }
 
   const pruned: ObservationData = {};
   for (const [key, value] of Object.entries(data)) {
     if (STRIP_KEYS.has(key)) continue;
     if (!keepState && STATE_KEYS.has(key)) continue;
-    pruned[key] = sanitize(value);
+    pruned[key] =
+      key === "entities"
+        ? compactEntities(sanitize(value))
+        : sanitize(value);
   }
   return pruned;
 }
@@ -274,7 +347,7 @@ async function startQueuePolling(
           const body = await response.text().catch(() => "");
           log("WARN", `Queue poll failed: ${response.status}`, body);
           await notify(
-            JSON.stringify({ error: `Queue poll failed: ${response.status} ${body}` }),
+            { error: `Queue poll failed: ${response.status} ${body}` },
             { event: "queue_error" },
           );
         } else {
@@ -293,7 +366,7 @@ async function startQueuePolling(
     if (!(err instanceof Error && err.name === "AbortError")) {
       log("ERROR", "Queue subscription error", { error: err instanceof Error ? err.message : String(err) });
       await notify(
-        JSON.stringify({ error: `Queue subscription error: ${err instanceof Error ? err.message : String(err)}` }),
+        { error: `Queue subscription error: ${err instanceof Error ? err.message : String(err)}` },
         { event: "queue_error" },
       );
     }
@@ -318,7 +391,7 @@ async function processQueueUpdate(
       sub.lastStatus.clear();
       log("INFO", "Queue empty — entries cleared");
       await notify(
-        JSON.stringify({ inQueue: false, hint: data.hint || "Not in queue." }),
+        { inQueue: false, hint: data.hint || "Not in queue." },
         { event: "queue_empty" },
       );
     }
@@ -335,7 +408,7 @@ async function processQueueUpdate(
     log("INFO", `Queue status change: ${prevKey ?? "(new)"} → ${key}`, { entryId: entry.id });
 
     await notify(
-      JSON.stringify(entry),
+      entry,
       {
         event: `queue_${entry.status}`,
         entry_id: entry.id,
@@ -408,7 +481,7 @@ async function startStreaming(
       const body = await response.text().catch(() => "");
       log("ERROR", `Observation stream HTTP error`, { runId, status: response.status, body });
       await notify(
-        JSON.stringify({ error: `Failed to connect to observation stream: ${response.status} ${body}` }),
+        { error: `Failed to connect to observation stream: ${response.status} ${body}` },
         { run_id: runId, event: "error" },
       );
       subscriptions.delete(runId);
@@ -418,7 +491,7 @@ async function startStreaming(
     if (!response.body) {
       log("ERROR", `No response body from SSE stream`, { runId });
       await notify(
-        JSON.stringify({ error: "No response body from SSE stream" }),
+        { error: "No response body from SSE stream" },
         { run_id: runId, event: "error" },
       );
       subscriptions.delete(runId);
@@ -480,7 +553,7 @@ async function startStreaming(
     } else {
       log("ERROR", `Observation stream error`, { runId, error: err instanceof Error ? err.message : String(err) });
       await notify(
-        JSON.stringify({ error: `Stream error: ${err instanceof Error ? err.message : String(err)}`, lastEventId }),
+        { error: `Stream error: ${err instanceof Error ? err.message : String(err)}`, lastEventId },
         { run_id: runId, event: "error" },
       );
     }
@@ -505,7 +578,7 @@ async function dispatchObservation(
   // "done" event
   if (eventType === "done") {
     await notify(
-      JSON.stringify({ event: "stream_ended", state: runningState }),
+      { event: "stream_ended", state: runningState },
       { run_id: runId, event: "stream_ended" },
     );
     return pendingInitCall;
@@ -514,7 +587,11 @@ async function dispatchObservation(
   // "error" event
   if (eventType === "error") {
     log("WARN", `SSE error event`, { runId, data });
-    await notify(data, { run_id: runId, event: "error" });
+    try {
+      await notify(JSON.parse(data), { run_id: runId, event: "error" });
+    } catch {
+      await notify({ error: data }, { run_id: runId, event: "error" });
+    }
     return pendingInitCall;
   }
 
@@ -527,7 +604,7 @@ async function dispatchObservation(
     const isInitCall = pruned.task !== undefined && pruned.event === undefined;
     const obsEvent = (pruned.event as string) || (isInitCall ? "init_call" : "observation");
 
-    log("INFO", `Observation: ${obsEvent}`, { runId, eventId });
+    log("INFO", `Observation: ${obsEvent}`, { runId, eventId, pruned });
 
     // Buffer init_call
     if (isInitCall) {
@@ -551,7 +628,7 @@ async function dispatchObservation(
       Object.assign(previousSentState, runningState);
       if (eventId) content.cursor = eventId;
 
-      await notify(JSON.stringify(content), { run_id: runId, event: "game_start" });
+      await notify(content, { run_id: runId, event: "game_start" });
       return null;
     }
 
@@ -564,7 +641,7 @@ async function dispatchObservation(
       };
       Object.assign(previousSentState, runningState);
       if (pendingInitCall.eventId) initContent.cursor = pendingInitCall.eventId;
-      await notify(JSON.stringify(initContent), { run_id: runId, event: "init_call" });
+      await notify(initContent, { run_id: runId, event: "init_call" });
       pendingInitCall = null;
     }
 
@@ -580,12 +657,16 @@ async function dispatchObservation(
     }
     Object.assign(previousSentState, runningState);
     if (eventId) content.cursor = eventId;
-    await notify(JSON.stringify(content), { run_id: runId, event: obsEvent });
+    await notify(content, { run_id: runId, event: obsEvent });
 
     return pendingInitCall;
   } catch (err) {
     log("ERROR", `Failed to parse observation`, { runId, error: err instanceof Error ? err.message : String(err) });
-    await notify(data, { run_id: runId, event: eventType || "unknown" });
+    try {
+      await notify(JSON.parse(data), { run_id: runId, event: eventType || "unknown" });
+    } catch {
+      await notify({ raw: data }, { run_id: runId, event: eventType || "unknown" });
+    }
     return pendingInitCall;
   }
 }
