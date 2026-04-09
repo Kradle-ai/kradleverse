@@ -160,6 +160,12 @@ const STRIP_KEYS = new Set([
 
 const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F]/g;
 
+/**
+ * Separator appended by arena-minecraft's getBotOutputSummary — everything
+ * after it is the source code that was already available in the `code` field.
+ */
+const CODE_SECTION_SEPARATOR = "\n\n/// code to be executed ///:\n";
+
 function sanitize(value: unknown): unknown {
   if (typeof value === "string") {
     return value.replace(CONTROL_CHAR_RE, (c) =>
@@ -273,6 +279,49 @@ function pruneObservation(
         : sanitize(value);
   }
   return pruned;
+}
+
+// ---------------------------------------------------------------------------
+// Output delta compression (only send new log lines for progress/executed)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks how much output was already sent per participant so that
+ * command_progress and command_executed events only carry the delta.
+ * Mirrors the OutputSimplifier pattern in arena-minecraft.
+ */
+function applyOutputDelta(
+  pruned: ObservationData,
+  raw: ObservationData,
+  deltaStates: Map<string, number>,
+): void {
+  const event = pruned.event as string;
+  if (event !== "command_progress" && event !== "command_executed") return;
+  if (typeof pruned.output !== "string") return;
+
+  const pid = (raw.participantId as string) || "_default";
+  const pastLength = deltaStates.get(pid) ?? 0;
+
+  let output = pruned.output;
+
+  // Strip the appended source-code section — already available via the
+  // `code` field, so sending it again just wastes tokens.
+  const codeMarker = output.indexOf(CODE_SECTION_SEPARATOR);
+  if (codeMarker !== -1) {
+    output = output.substring(0, codeMarker);
+  }
+
+  const strippedLength = output.length;
+
+  // Only send the new portion since the last update
+  if (strippedLength >= pastLength && pastLength > 0) {
+    output = output.substring(pastLength);
+  }
+
+  pruned.output = output.trim();
+
+  // After command_executed, reset so the next execution starts fresh
+  deltaStates.set(pid, event === "command_executed" ? 0 : strippedLength);
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +511,8 @@ async function startStreaming(
 
   const runningState: Record<string, unknown> = {};
   const previousSentState: Record<string, unknown> = {};
+  /** Tracks output length already sent per participant for delta compression. */
+  const outputDeltaStates = new Map<string, number>();
   let lastEventId: string | undefined;
   let pendingInitCall: { pruned: ObservationData; eventId: string } | null = null;
 
@@ -525,7 +576,7 @@ async function startStreaming(
           if (currentData) {
             pendingInitCall = await dispatchObservation(
               runId, currentEventType, currentData, currentId,
-              runningState, previousSentState, pendingInitCall,
+              runningState, previousSentState, outputDeltaStates, pendingInitCall,
             );
             lastEventId = currentId || lastEventId;
 
@@ -573,6 +624,7 @@ async function dispatchObservation(
   eventId: string,
   runningState: Record<string, unknown>,
   previousSentState: Record<string, unknown>,
+  outputDeltaStates: Map<string, number>,
   pendingInitCall: { pruned: ObservationData; eventId: string } | null,
 ): Promise<{ pruned: ObservationData; eventId: string } | null> {
   // "done" event
@@ -600,6 +652,7 @@ async function dispatchObservation(
     const parsed = JSON.parse(data);
     const obsData: ObservationData = parsed.data || parsed;
     const pruned = pruneObservation(obsData, runningState);
+    applyOutputDelta(pruned, obsData, outputDeltaStates);
 
     const isInitCall = pruned.task !== undefined && pruned.event === undefined;
     const obsEvent = (pruned.event as string) || (isInitCall ? "init_call" : "observation");
