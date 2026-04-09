@@ -127,8 +127,9 @@ async function notify(
 
 const STATE_KEYS = new Set([
   "runStatus", "winner", "score", "position", "health", "lives", "hunger",
-  "executing", "biome", "weather", "timeOfDay", "players", "inventory",
-  "armor", "heldItem", "contactBlocks", "blocks", "entities", "craftable",
+  "break", "executing", "biome", "weather", "timeOfDay", "players",
+  "inventory", "armor", "heldItem", "contactBlocks", "blocks", "entities",
+  "craftable",
 ]);
 
 const KEEP_STATE_EVENTS = new Set(["initial_state", "game_over"]);
@@ -157,6 +158,28 @@ function sanitize(value: unknown): unknown {
 interface ObservationData {
   event?: string;
   [key: string]: unknown;
+}
+
+/**
+ * Compare current running state against what was last sent to the client.
+ * Returns an object with only the keys whose serialized value changed,
+ * or null if nothing changed.
+ */
+function diffState(
+  current: Record<string, unknown>,
+  previous: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const changed: Record<string, unknown> = {};
+  let hasChanges = false;
+  for (const [key, value] of Object.entries(current)) {
+    const cur = JSON.stringify(value);
+    const prev = JSON.stringify(previous[key]);
+    if (cur !== prev) {
+      changed[key] = value;
+      hasChanges = true;
+    }
+  }
+  return hasChanges ? changed : null;
 }
 
 function pruneObservation(
@@ -365,6 +388,7 @@ async function startStreaming(
   if (cursor) url.searchParams.set("cursor", cursor);
 
   const runningState: Record<string, unknown> = {};
+  const previousSentState: Record<string, unknown> = {};
   let lastEventId: string | undefined;
   let pendingInitCall: { pruned: ObservationData; eventId: string } | null = null;
 
@@ -428,7 +452,7 @@ async function startStreaming(
           if (currentData) {
             pendingInitCall = await dispatchObservation(
               runId, currentEventType, currentData, currentId,
-              runningState, pendingInitCall,
+              runningState, previousSentState, pendingInitCall,
             );
             lastEventId = currentId || lastEventId;
 
@@ -475,6 +499,7 @@ async function dispatchObservation(
   data: string,
   eventId: string,
   runningState: Record<string, unknown>,
+  previousSentState: Record<string, unknown>,
   pendingInitCall: { pruned: ObservationData; eventId: string } | null,
 ): Promise<{ pruned: ObservationData; eventId: string } | null> {
   // "done" event
@@ -523,6 +548,7 @@ async function dispatchObservation(
         observation: merged,
         state: { ...runningState },
       };
+      Object.assign(previousSentState, runningState);
       if (eventId) content.cursor = eventId;
 
       await notify(JSON.stringify(content), { run_id: runId, event: "game_start" });
@@ -536,16 +562,23 @@ async function dispatchObservation(
         observation: pendingInitCall.pruned,
         state: { ...runningState },
       };
+      Object.assign(previousSentState, runningState);
       if (pendingInitCall.eventId) initContent.cursor = pendingInitCall.eventId;
       await notify(JSON.stringify(initContent), { run_id: runId, event: "init_call" });
       pendingInitCall = null;
     }
 
-    // Normal dispatch
+    // Normal dispatch — game_over gets full state, others get delta only
     const content: Record<string, unknown> = {
       observation: pruned,
-      state: { ...runningState },
     };
+    if (obsEvent === "game_over") {
+      content.state = { ...runningState };
+    } else {
+      const stateDiff = diffState(runningState, previousSentState);
+      if (stateDiff) content.state = stateDiff;
+    }
+    Object.assign(previousSentState, runningState);
     if (eventId) content.cursor = eventId;
     await notify(JSON.stringify(content), { run_id: runId, event: obsEvent });
 
@@ -603,7 +636,11 @@ OBSERVATION EVENT TYPES:
 - "stream_ended" — SSE stream closed
 - "error" — stream error
 
-Each observation event body is JSON with: observation (pruned data), state (world snapshot), cursor (for reconnection).
+Each observation event body is JSON with: observation (pruned data), state (see below), cursor (for reconnection).
+
+STATE (delta compression):
+The "state" field contains world-snapshot keys: runStatus, winner, score, position, health, lives, hunger, break, executing, biome, weather, timeOfDay, players, inventory, armor, heldItem, contactBlocks, blocks, entities, craftable.
+To save tokens, only state keys that CHANGED since the previous event are included. If no state key changed, the "state" field is omitted entirely. game_start and game_over always include the full state snapshot.
 
 IMPORTANT — DO NOT call checkQueue or observe from the KradleVerse remote MCP. This channel replaces both:
 - subscribeQueue replaces checkQueue — queue status changes are pushed to you automatically.
