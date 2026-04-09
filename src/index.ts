@@ -64,6 +64,7 @@ if (LOG_ENABLED) {
   writeFileSync(LOG_FILE, `[${new Date().toISOString()}] KradleVerse channel started\n`);
 }
 
+
 function log(level: "INFO" | "WARN" | "ERROR", msg: string, data?: unknown): void {
   if (!LOG_ENABLED) return;
   const ts = new Date().toISOString();
@@ -71,7 +72,7 @@ function log(level: "INFO" | "WARN" | "ERROR", msg: string, data?: unknown): voi
   if (data !== undefined) {
     try {
       const s = JSON.stringify(data);
-      line += ` ${s.length > 2000 ? s.slice(0, 2000) + "...(truncated)" : s}`;
+      line += ` ${s}`;
     } catch {
       line += ` [unserializable]`;
     }
@@ -101,6 +102,24 @@ log("INFO", "Config", { KRADLE_API_URL, KRADLEVERSE_API_URL, QUEUE_POLL_INTERVAL
 // Channel notification helper
 // ---------------------------------------------------------------------------
 
+/** Serialize a value as compact JS notation (single quotes, unquoted keys). */
+function toJS(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "string") {
+    const escaped = value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+    return `'${escaped}'`;
+  }
+  if (Array.isArray(value)) return `[${value.map(toJS).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .map(([k, v]) => `${k}:${toJS(v)}`);
+    return `{${entries.join(",")}}`;
+  }
+  return String(value);
+}
+
 /** Late-bound — set after Server is created. */
 let mcpServer: Server;
 
@@ -109,15 +128,16 @@ let mcpServer: Server;
  * and logs the event to the debug log file.
  */
 async function notify(
-  content: string,
+  content: Record<string, unknown> | string,
   meta: Record<string, string>,
 ): Promise<void> {
   const receivedAt = new Date().toISOString();
   const enrichedMeta = { ...meta, received_at: receivedAt };
-  log("INFO", `→ channel event=${meta.event ?? "?"}`, { meta: enrichedMeta, contentLength: content.length });
+  const serialized = typeof content === "string" ? content : toJS(content);
+  log("INFO", `→ channel event=${meta.event ?? "?"}`, { meta: enrichedMeta, content: serialized });
   await mcpServer.notification({
     method: "notifications/claude/channel",
-    params: { content, meta: enrichedMeta },
+    params: { content: serialized, meta: enrichedMeta },
   });
 }
 
@@ -138,7 +158,19 @@ const STRIP_KEYS = new Set([
   "name", "depthActionCounter", "participantId", "runId", "time",
 ]);
 
+/**
+ * Events where we only keep `event` plus meaningful content fields.
+ * Strips observationId, pastObservationId, elapsedMs, and empty values.
+ */
+const LIGHTWEIGHT_EVENTS = new Set(["chat", "message"]);
+
 const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F]/g;
+
+/**
+ * Separator appended by arena-minecraft's getBotOutputSummary — everything
+ * after it is the source code that was already available in the `code` field.
+ */
+const CODE_SECTION_SEPARATOR = "\n\n/// code to be executed ///:\n";
 
 function sanitize(value: unknown): unknown {
   if (typeof value === "string") {
@@ -182,6 +214,84 @@ function diffState(
   return hasChanges ? changed : null;
 }
 
+/**
+ * Compact entities from an array of objects into a grouped map of position
+ * strings. Keeps all spatial info but truncates to integers.
+ *
+ * Before: [{type:'item',absolute:{x:1.5,y:-60,z:4.5},relative:'~-1 ~0 ~0',distance:1.19,additional:{itemType:'wheat'}}]
+ * After:  {"item:wheat":["2 -60 5 (~-1 ~0 ~0) dist=1"]}
+ */
+function compactEntities(
+  entities: unknown,
+): Record<string, string[]> | unknown {
+  if (!Array.isArray(entities)) return entities;
+  const grouped: Record<string, string[]> = {};
+  for (const e of entities) {
+    if (!e || typeof e !== "object") continue;
+    const { type, absolute: abs, relative: rel, distance: d, additional } =
+      e as Record<string, unknown>;
+    if (typeof type !== "string") continue;
+
+    // Merge item:type back (e.g. type="item" + additional.itemType="wheat" → "item:wheat")
+    let key = type;
+    if (
+      type === "item" &&
+      additional &&
+      typeof additional === "object" &&
+      "itemType" in (additional as Record<string, unknown>)
+    ) {
+      key = `item:${(additional as Record<string, unknown>).itemType}`;
+    }
+
+    const a = abs as { x: number; y: number; z: number } | undefined;
+    const ax = a ? Math.round(a.x) : 0;
+    const ay = a ? Math.round(a.y) : 0;
+    const az = a ? Math.round(a.z) : 0;
+    const dist = typeof d === "number" ? Math.round(d) : 0;
+
+    const str = `${ax} ${ay} ${az} (${rel || "~0 ~0 ~0"}) dist=${dist}`;
+    if (grouped[key]) {
+      grouped[key].push(str);
+    } else {
+      grouped[key] = [str];
+    }
+  }
+  return grouped;
+}
+
+/** Truncate position coordinates to 2 decimal places. */
+function compactPosition(pos: unknown): unknown {
+  if (!pos || typeof pos !== "object") return pos;
+  const p = pos as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(p)) {
+    out[k] = typeof v === "number" ? Math.round(v * 100) / 100 : v;
+  }
+  return out;
+}
+
+/** Strip null armor slots; return null if all slots are null/missing. */
+function compactArmor(armor: unknown): unknown {
+  if (!armor || typeof armor !== "object") return armor;
+  const a = armor as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  let hasValue = false;
+  for (const [k, v] of Object.entries(a)) {
+    if (v != null) {
+      out[k] = v;
+      hasValue = true;
+    }
+  }
+  return hasValue ? out : null;
+}
+
+function compactValue(key: string, value: unknown): unknown {
+  if (key === "entities") return compactEntities(sanitize(value));
+  if (key === "position") return compactPosition(sanitize(value));
+  if (key === "armor") return compactArmor(sanitize(value));
+  return sanitize(value);
+}
+
 function pruneObservation(
   data: ObservationData,
   runningState: Record<string, unknown>,
@@ -190,16 +300,88 @@ function pruneObservation(
   const keepState = isInitCall || KEEP_STATE_EVENTS.has(data.event as string);
 
   for (const key of STATE_KEYS) {
-    if (key in data) runningState[key] = sanitize(data[key]);
+    if (key in data) {
+      runningState[key] = compactValue(key, data[key]);
+    }
   }
 
   const pruned: ObservationData = {};
   for (const [key, value] of Object.entries(data)) {
     if (STRIP_KEYS.has(key)) continue;
     if (!keepState && STATE_KEYS.has(key)) continue;
-    pruned[key] = sanitize(value);
+    let sanitized = compactValue(key, value);
+    // Skip null values and empty arrays at the root level
+    if (sanitized === null || sanitized === undefined) continue;
+    if (Array.isArray(sanitized) && sanitized.length === 0) continue;
+    // Trim chat message strings
+    if (key === "chatMessages" && Array.isArray(sanitized)) {
+      sanitized = (sanitized as Array<Record<string, unknown>>).map((m) => ({
+        ...m,
+        ...(typeof m.message === "string" ? { message: m.message.trim() } : {}),
+      }));
+    }
+    pruned[key] = sanitized;
   }
+
+  // For lightweight events, keep only event + meaningful content
+  if (LIGHTWEIGHT_EVENTS.has(pruned.event as string)) {
+    const slim: ObservationData = { event: pruned.event };
+    if (Array.isArray(pruned.chatMessages) && pruned.chatMessages.length > 0) {
+      slim.chatMessages = (pruned.chatMessages as Array<Record<string, unknown>>).map((m) => ({
+        sender: m.sender,
+        message: typeof m.message === "string" ? m.message.trim() : m.message,
+      }));
+    }
+    if (typeof pruned.output === "string" && pruned.output.length > 0) {
+      slim.output = pruned.output.trim();
+    }
+    return slim;
+  }
+
   return pruned;
+}
+
+// ---------------------------------------------------------------------------
+// Output delta compression (only send new log lines for progress/executed)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks how much output was already sent per participant so that
+ * command_progress and command_executed events only carry the delta.
+ * Mirrors the OutputSimplifier pattern in arena-minecraft.
+ */
+function applyOutputDelta(
+  pruned: ObservationData,
+  raw: ObservationData,
+  deltaStates: Map<string, number>,
+): void {
+  const event = pruned.event as string;
+  if (event !== "command_progress" && event !== "command_executed") return;
+  if (typeof pruned.output !== "string") return;
+
+  const pid = (raw.participantId as string) || "_default";
+  const pastLength = deltaStates.get(pid) ?? 0;
+
+  let output = pruned.output;
+
+  // Strip the appended source-code section — already available via the
+  // `code` field, so sending it again just wastes tokens.
+  const codeMarker = output.indexOf(CODE_SECTION_SEPARATOR);
+  if (codeMarker !== -1) {
+    output = output.substring(0, codeMarker);
+  }
+
+  const strippedLength = output.length;
+
+  // Only send the new portion since the last update
+  if (strippedLength >= pastLength && pastLength > 0) {
+    output = output.substring(pastLength);
+  }
+
+  pruned.output = output.trim();
+
+  // After command_executed, reset so the next execution starts fresh
+  deltaStates.set(pid, event === "command_executed" ? 0 : strippedLength);
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +456,7 @@ async function startQueuePolling(
           const body = await response.text().catch(() => "");
           log("WARN", `Queue poll failed: ${response.status}`, body);
           await notify(
-            JSON.stringify({ error: `Queue poll failed: ${response.status} ${body}` }),
+            { error: `Queue poll failed: ${response.status} ${body}` },
             { event: "queue_error" },
           );
         } else {
@@ -293,7 +475,7 @@ async function startQueuePolling(
     if (!(err instanceof Error && err.name === "AbortError")) {
       log("ERROR", "Queue subscription error", { error: err instanceof Error ? err.message : String(err) });
       await notify(
-        JSON.stringify({ error: `Queue subscription error: ${err instanceof Error ? err.message : String(err)}` }),
+        { error: `Queue subscription error: ${err instanceof Error ? err.message : String(err)}` },
         { event: "queue_error" },
       );
     }
@@ -318,7 +500,7 @@ async function processQueueUpdate(
       sub.lastStatus.clear();
       log("INFO", "Queue empty — entries cleared");
       await notify(
-        JSON.stringify({ inQueue: false, hint: data.hint || "Not in queue." }),
+        { inQueue: false, hint: data.hint || "Not in queue." },
         { event: "queue_empty" },
       );
     }
@@ -335,7 +517,7 @@ async function processQueueUpdate(
     log("INFO", `Queue status change: ${prevKey ?? "(new)"} → ${key}`, { entryId: entry.id });
 
     await notify(
-      JSON.stringify(entry),
+      entry,
       {
         event: `queue_${entry.status}`,
         entry_id: entry.id,
@@ -389,6 +571,8 @@ async function startStreaming(
 
   const runningState: Record<string, unknown> = {};
   const previousSentState: Record<string, unknown> = {};
+  /** Tracks output length already sent per participant for delta compression. */
+  const outputDeltaStates = new Map<string, number>();
   let lastEventId: string | undefined;
   let pendingInitCall: { pruned: ObservationData; eventId: string } | null = null;
 
@@ -408,7 +592,7 @@ async function startStreaming(
       const body = await response.text().catch(() => "");
       log("ERROR", `Observation stream HTTP error`, { runId, status: response.status, body });
       await notify(
-        JSON.stringify({ error: `Failed to connect to observation stream: ${response.status} ${body}` }),
+        { error: `Failed to connect to observation stream: ${response.status} ${body}` },
         { run_id: runId, event: "error" },
       );
       subscriptions.delete(runId);
@@ -418,7 +602,7 @@ async function startStreaming(
     if (!response.body) {
       log("ERROR", `No response body from SSE stream`, { runId });
       await notify(
-        JSON.stringify({ error: "No response body from SSE stream" }),
+        { error: "No response body from SSE stream" },
         { run_id: runId, event: "error" },
       );
       subscriptions.delete(runId);
@@ -452,7 +636,7 @@ async function startStreaming(
           if (currentData) {
             pendingInitCall = await dispatchObservation(
               runId, currentEventType, currentData, currentId,
-              runningState, previousSentState, pendingInitCall,
+              runningState, previousSentState, outputDeltaStates, pendingInitCall,
             );
             lastEventId = currentId || lastEventId;
 
@@ -480,7 +664,7 @@ async function startStreaming(
     } else {
       log("ERROR", `Observation stream error`, { runId, error: err instanceof Error ? err.message : String(err) });
       await notify(
-        JSON.stringify({ error: `Stream error: ${err instanceof Error ? err.message : String(err)}`, lastEventId }),
+        { error: `Stream error: ${err instanceof Error ? err.message : String(err)}`, lastEventId },
         { run_id: runId, event: "error" },
       );
     }
@@ -500,12 +684,13 @@ async function dispatchObservation(
   eventId: string,
   runningState: Record<string, unknown>,
   previousSentState: Record<string, unknown>,
+  outputDeltaStates: Map<string, number>,
   pendingInitCall: { pruned: ObservationData; eventId: string } | null,
 ): Promise<{ pruned: ObservationData; eventId: string } | null> {
   // "done" event
   if (eventType === "done") {
     await notify(
-      JSON.stringify({ event: "stream_ended", state: runningState }),
+      { event: "stream_ended", state: runningState },
       { run_id: runId, event: "stream_ended" },
     );
     return pendingInitCall;
@@ -514,7 +699,11 @@ async function dispatchObservation(
   // "error" event
   if (eventType === "error") {
     log("WARN", `SSE error event`, { runId, data });
-    await notify(data, { run_id: runId, event: "error" });
+    try {
+      await notify(JSON.parse(data), { run_id: runId, event: "error" });
+    } catch {
+      await notify({ error: data }, { run_id: runId, event: "error" });
+    }
     return pendingInitCall;
   }
 
@@ -523,11 +712,12 @@ async function dispatchObservation(
     const parsed = JSON.parse(data);
     const obsData: ObservationData = parsed.data || parsed;
     const pruned = pruneObservation(obsData, runningState);
+    applyOutputDelta(pruned, obsData, outputDeltaStates);
 
     const isInitCall = pruned.task !== undefined && pruned.event === undefined;
     const obsEvent = (pruned.event as string) || (isInitCall ? "init_call" : "observation");
 
-    log("INFO", `Observation: ${obsEvent}`, { runId, eventId });
+    log("INFO", `Observation: ${obsEvent}`, { runId, eventId, pruned });
 
     // Buffer init_call
     if (isInitCall) {
@@ -551,7 +741,7 @@ async function dispatchObservation(
       Object.assign(previousSentState, runningState);
       if (eventId) content.cursor = eventId;
 
-      await notify(JSON.stringify(content), { run_id: runId, event: "game_start" });
+      await notify(content, { run_id: runId, event: "game_start" });
       return null;
     }
 
@@ -564,28 +754,34 @@ async function dispatchObservation(
       };
       Object.assign(previousSentState, runningState);
       if (pendingInitCall.eventId) initContent.cursor = pendingInitCall.eventId;
-      await notify(JSON.stringify(initContent), { run_id: runId, event: "init_call" });
+      await notify(initContent, { run_id: runId, event: "init_call" });
       pendingInitCall = null;
     }
 
-    // Normal dispatch — game_over gets full state, others get delta only
+    // Normal dispatch — game_over gets full state, lightweight events skip state entirely,
+    // others get delta only
     const content: Record<string, unknown> = {
       observation: pruned,
     };
     if (obsEvent === "game_over") {
       content.state = { ...runningState };
-    } else {
+      Object.assign(previousSentState, runningState);
+    } else if (!LIGHTWEIGHT_EVENTS.has(obsEvent)) {
       const stateDiff = diffState(runningState, previousSentState);
       if (stateDiff) content.state = stateDiff;
+      Object.assign(previousSentState, runningState);
     }
-    Object.assign(previousSentState, runningState);
     if (eventId) content.cursor = eventId;
-    await notify(JSON.stringify(content), { run_id: runId, event: obsEvent });
+    await notify(content, { run_id: runId, event: obsEvent });
 
     return pendingInitCall;
   } catch (err) {
     log("ERROR", `Failed to parse observation`, { runId, error: err instanceof Error ? err.message : String(err) });
-    await notify(data, { run_id: runId, event: eventType || "unknown" });
+    try {
+      await notify(JSON.parse(data), { run_id: runId, event: eventType || "unknown" });
+    } catch {
+      await notify({ raw: data }, { run_id: runId, event: eventType || "unknown" });
+    }
     return pendingInitCall;
   }
 }
