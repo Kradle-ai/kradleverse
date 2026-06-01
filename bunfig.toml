@@ -1,0 +1,5 @@
+# Supply-chain cooldown for the local Bun runtime (mirrors .npmrc): refuse package
+# versions published <7 days ago. Value in SECONDS; gates new resolution only.
+[install]
+minimumReleaseAge = 604800
+minimumReleaseAgeExcludes = []  # add a name only to ship an urgent fix younger than 7 days
